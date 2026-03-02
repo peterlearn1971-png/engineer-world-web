@@ -1,0 +1,816 @@
+// src/app/c/[token]/jobs/[job_id]/page.tsx
+import Link from "next/link";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+
+type Job = {
+  id: string;
+  title: string | null;
+  status: string | null;
+  company_id: string;
+  client_notes?: string | null;
+};
+
+type Candidate = {
+  id: string;
+  full_name: string | null;
+  city: string | null;
+  region: string | null;
+  resume_url?: string | null;
+};
+
+type TankRow = {
+  id: string;
+  job_id: string;
+  candidate_id: string;
+  created_at: string;
+  tier?: string | null;
+  blocked?: boolean | null;
+  visible_to_client?: boolean | null;
+  notes?: string | null;
+  candidates?: Candidate | null;
+};
+
+type IntroRequest = {
+  id: string;
+  status: string | null;
+  candidate_id: string;
+  job_id: string | null;
+  created_at?: string | null;
+};
+
+type ActivityItem = {
+  at: string;
+  kind: "candidate_added" | "intro_requested" | "intro_approved";
+  candidate_name: string;
+};
+
+function norm(v: any) {
+  return String(v ?? "").trim();
+}
+
+function show(v: any) {
+  const x = norm(v);
+  return x ? x : "—";
+}
+
+function fmtTime(dt: string | null | undefined) {
+  if (!dt) return "—";
+  try {
+    return new Date(dt).toLocaleString();
+  } catch {
+    return String(dt);
+  }
+}
+
+function normStatus(s: string | null | undefined) {
+  const v = norm(s).toLowerCase();
+  if (!v) return "new";
+  return v;
+}
+
+function clientJobStatusLabel(raw: string | null | undefined) {
+  const s = norm(raw).toLowerCase();
+  if (!s || s === "open") return "Active";
+  if (s === "paused") return "Paused";
+  if (s === "closed") return "Closed";
+  return s;
+}
+
+function clientLabelForIntroStatus(status: string) {
+  if (status === "completed") return "Approved";
+  if (status === "declined") return "Declined";
+  if (status === "new" || status === "contacted") return "Intro requested";
+  return "Intro requested";
+}
+
+function isApproved(status: string) {
+  return status === "completed";
+}
+
+function includesLoose(haystack: string, needle: string) {
+  const h = norm(haystack).toLowerCase();
+  const n = norm(needle).toLowerCase();
+  if (!n) return true;
+  return h.includes(n);
+}
+
+function pillStyle(kind: "neutral" | "good" | "warn") {
+  if (kind === "good") {
+    return { border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1e3a8a" };
+  }
+  if (kind === "warn") {
+    return { border: "1px solid #fed7aa", background: "#fff7ed", color: "#7c2d12" };
+  }
+  return { border: "1px solid #e5e7eb", background: "#f9fafb", color: "#374151" };
+}
+
+function isToday(dt: string | null | undefined) {
+  if (!dt) return false;
+  const d = new Date(dt);
+  if (!Number.isFinite(d.getTime())) return false;
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
+function isWithinDays(dt: string | null | undefined, days: number) {
+  if (!dt) return false;
+  const ms = new Date(dt).getTime();
+  if (!Number.isFinite(ms)) return false;
+  const age = Date.now() - ms;
+  return age <= days * 24 * 60 * 60 * 1000;
+}
+
+function pick(obj: any, keys: string[]) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (norm(v)) return v;
+  }
+  return null;
+}
+
+export default async function ClientJobTankPage(props: {
+  params: Promise<{ token: string; job_id: string }>;
+  searchParams?: Promise<{ q?: string; f?: string }>;
+}) {
+  const { token, job_id } = await props.params;
+  const sp = (await props.searchParams) || {};
+
+  const q = norm(sp.q);
+  const fRaw = norm(sp.f).toLowerCase();
+  const filter = fRaw === "approved" || fRaw === "requested" || fRaw === "available" ? fRaw : "all";
+
+  const page: React.CSSProperties = {
+    padding: 24,
+    maxWidth: 980,
+    margin: "0 auto",
+    fontFamily: "system-ui, Arial",
+  };
+
+  const hero: React.CSSProperties = {
+    border: "1px solid #eee",
+    borderRadius: 16,
+    padding: 16,
+    background: "white",
+  };
+
+  const card: React.CSSProperties = {
+    marginTop: 14,
+    border: "1px solid #eee",
+    borderRadius: 16,
+    padding: 14,
+    background: "white",
+  };
+
+  const box: React.CSSProperties = {
+    border: "1px solid #eee",
+    borderRadius: 14,
+    padding: 12,
+    background: "#fbfbfb",
+  };
+
+  const btn: React.CSSProperties = {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid #d9d9d9",
+    background: "white",
+    cursor: "pointer",
+    textDecoration: "none",
+    display: "inline-block",
+    fontSize: 13,
+    color: "#111",
+  };
+
+  const btnPrimary: React.CSSProperties = {
+    ...btn,
+    background: "black",
+    color: "white",
+    border: "1px solid black",
+  };
+
+  const tab: React.CSSProperties = {
+    ...btn,
+    borderRadius: 999,
+    padding: "8px 12px",
+  };
+
+  const tabOn: React.CSSProperties = {
+    ...tab,
+    background: "#111",
+    color: "#fff",
+    border: "1px solid #111",
+  };
+
+  const pillBase: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    whiteSpace: "nowrap",
+  };
+
+  const muted: React.CSSProperties = { color: "#666", fontSize: 13 };
+
+  // 1) Resolve token -> company
+  const { data: companyRow, error: companyErr } = await supabaseAdmin
+    .from("company_portal_tokens")
+    .select("token, company_id, revoked_at")
+    .eq("token", token)
+    .maybeSingle();
+
+  if (companyErr || !companyRow?.company_id) {
+    return (
+      <main style={page}>
+        <h1 style={{ margin: 0 }}>Portal</h1>
+        <div style={{ marginTop: 10, color: "crimson" }}>Invalid portal link.</div>
+      </main>
+    );
+  }
+
+  if ((companyRow as any).revoked_at) {
+    return (
+      <main style={page}>
+        <h1 style={{ margin: 0 }}>Portal</h1>
+        <div style={{ marginTop: 10, color: "crimson" }}>This link has been revoked.</div>
+      </main>
+    );
+  }
+
+  const company_id = String(companyRow.company_id);
+
+  // 2) Load job (must belong to company)
+  const { data: jobRow, error: jobErr } = await supabaseAdmin
+    .from("jobs")
+    .select("id, title, status, company_id, client_notes")
+    .eq("id", job_id)
+    .eq("company_id", company_id)
+    .maybeSingle();
+
+  if (jobErr || !jobRow) {
+    return (
+      <main style={page}>
+        <h1 style={{ margin: 0 }}>Job not found</h1>
+        <div style={{ marginTop: 10 }}>
+          <Link href={`/c/${token}`} style={btn}>
+            Back to jobs
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  const job = jobRow as Job;
+
+  // 3) Load tank rows (visible candidates for this job)
+  const { data: tankRows, error: tankErr } = await supabaseAdmin
+    .from("job_tank_items")
+    .select(
+      `
+      id,
+      job_id,
+      candidate_id,
+      created_at,
+      tier,
+      notes,
+      candidates (
+        id,
+        full_name,
+        city,
+        region,
+        resume_url
+      )
+    `
+    )
+    .eq("job_id", job_id)
+    .eq("visible_to_client", true)
+    .eq("blocked", false)
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+  if (tankErr) {
+    return (
+      <main style={page}>
+        <h1 style={{ margin: 0 }}>{norm(job.title) || "Job tank"}</h1>
+        <div style={{ marginTop: 10, color: "crimson" }}>Error loading tank: {tankErr.message}</div>
+      </main>
+    );
+  }
+
+  const rowsAll = (tankRows || []) as TankRow[];
+
+  // Stable anonymous labels: Candidate A1, A2...
+  const labelByCandidateId = new Map<string, string>();
+  {
+    let idx = 1;
+    for (const r of rowsAll) {
+      const cid = String(r.candidate_id || "");
+      if (!cid) continue;
+      if (!labelByCandidateId.has(cid)) {
+        labelByCandidateId.set(cid, `Candidate A${idx}`);
+        idx += 1;
+      }
+    }
+  }
+
+  // Load candidate_cards for those candidates
+  const candidateIds = Array.from(new Set(rowsAll.map((r) => String(r.candidate_id)).filter(Boolean)));
+  const cardByCandidateId = new Map<string, any>();
+  let candidateCardsLoadError: string | null = null;
+
+  if (candidateIds.length) {
+    const { data: cardRows, error: cardErr } = await supabaseAdmin
+      .from("candidate_cards")
+      .select("*")
+      .in("candidate_id", candidateIds)
+      .limit(500);
+
+    if (cardErr) {
+      candidateCardsLoadError = cardErr.message;
+      console.warn("candidate_cards load error:", cardErr.message);
+    } else {
+      for (const cr of cardRows || []) {
+        const cid = String((cr as any)?.candidate_id || "");
+        if (!cid) continue;
+        cardByCandidateId.set(cid, cr);
+      }
+    }
+  }
+
+  // 4) Load intro requests for this company + job
+  const { data: introRows, error: introErr } = await supabaseAdmin
+    .from("intro_requests")
+    .select("id, status, candidate_id, job_id, created_at")
+    .eq("company_id", company_id)
+    .eq("job_id", job_id)
+    .limit(500);
+
+  if (introErr) {
+    return (
+      <main style={page}>
+        <h1 style={{ margin: 0 }}>{norm(job.title) || "Job tank"}</h1>
+        <div style={{ marginTop: 10, color: "crimson" }}>Error loading intro requests: {introErr.message}</div>
+      </main>
+    );
+  }
+
+  const introByCandidate = new Map<string, IntroRequest>();
+  for (const r of (introRows || []) as IntroRequest[]) {
+    if (!r?.candidate_id) continue;
+    introByCandidate.set(String(r.candidate_id), r);
+  }
+
+  // Snapshot + activity
+  let tankUpdated = "";
+  const totalVisible = rowsAll.length;
+  let totalRequested = 0;
+  let totalApproved = 0;
+
+  let addedToday = 0;
+  let added7d = 0;
+
+  const activity: ActivityItem[] = [];
+
+  for (const r of rowsAll) {
+    const dt = r?.created_at ? String(r.created_at) : "";
+    if (dt) {
+      if (!tankUpdated || new Date(dt).getTime() > new Date(tankUpdated).getTime()) tankUpdated = dt;
+      if (isToday(dt)) addedToday += 1;
+      if (isWithinDays(dt, 7)) added7d += 1;
+
+      const anon = labelByCandidateId.get(String(r.candidate_id)) || "Candidate";
+      activity.push({ at: dt, kind: "candidate_added", candidate_name: anon });
+    }
+
+    const intro = introByCandidate.get(String(r.candidate_id));
+    if (intro) {
+      totalRequested += 1;
+      const st = normStatus(intro.status);
+      if (isApproved(st)) totalApproved += 1;
+    }
+  }
+
+  let intros7d = 0;
+  for (const ir of (introRows || []) as IntroRequest[]) {
+    const dt = ir?.created_at ? String(ir.created_at) : "";
+    if (dt && isWithinDays(dt, 7)) intros7d += 1;
+
+    const anon = labelByCandidateId.get(String(ir.candidate_id)) || "Candidate";
+
+    if (dt) {
+      activity.push({ at: dt, kind: "intro_requested", candidate_name: anon });
+      const st = normStatus(ir.status);
+      if (isApproved(st)) activity.push({ at: dt, kind: "intro_approved", candidate_name: anon });
+    }
+  }
+
+  activity.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  const activityTop = activity.slice(0, 6);
+
+  function activityLine(a: ActivityItem) {
+    if (a.kind === "candidate_added") return `Candidate added: ${a.candidate_name}`;
+    if (a.kind === "intro_requested") return `Intro requested: ${a.candidate_name}`;
+    return `Intro approved: ${a.candidate_name}`;
+  }
+
+  // Apply search + filter
+  const rowsFiltered = rowsAll.filter((r) => {
+    const cid = String(r.candidate_id);
+    const introReq = introByCandidate.get(cid);
+    const st = introReq ? normStatus(introReq.status) : null;
+    const approved = st ? isApproved(st) : false;
+    const requested = !!st;
+
+    if (filter === "available" && requested) return false;
+    if (filter === "requested" && !requested) return false;
+    if (filter === "approved" && !approved) return false;
+
+    if (q) {
+      const anon = labelByCandidateId.get(cid) || "Candidate";
+      const cc = cardByCandidateId.get(cid) || null;
+
+      const hay = [
+        anon,
+        norm(pick(cc, ["headline"])),
+        norm(pick(cc, ["summary"])),
+        norm(pick(cc, ["location", "location_text"])),
+        norm(pick(cc, ["work_mode", "work_mode_pref", "work_mode_preference"])),
+        norm(pick(cc, ["license_certification", "license", "certifications"])),
+        norm(pick(cc, ["languages"])),
+        norm(pick(cc, ["comp_range_text", "compensation_range", "compensation_range_text"])),
+        norm(pick(cc, ["availability"])),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      return includesLoose(hay, q);
+    }
+
+    return true;
+  });
+
+  const tankTitle = norm(job.title) || "Job tank";
+  const jobStatusClient = clientJobStatusLabel(job.status);
+
+  const baseHref = `/c/${token}/jobs/${job_id}`;
+  const hrefAll = `${baseHref}?${new URLSearchParams({ ...(q ? { q } : {}), f: "all" }).toString()}`;
+  const hrefAvailable = `${baseHref}?${new URLSearchParams({ ...(q ? { q } : {}), f: "available" }).toString()}`;
+  const hrefRequested = `${baseHref}?${new URLSearchParams({ ...(q ? { q } : {}), f: "requested" }).toString()}`;
+  const hrefApproved = `${baseHref}?${new URLSearchParams({ ...(q ? { q } : {}), f: "approved" }).toString()}`;
+
+  const notes = norm(job.client_notes);
+
+  return (
+    <main style={page}>
+      <div style={hero}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ minWidth: 360, flex: 1 }}>
+            <div style={{ color: "#666", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 }}>Job tank</div>
+            <h1 style={{ margin: "6px 0 0 0" }}>{tankTitle}</h1>
+
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span
+                style={{
+                  ...pillBase,
+                  ...pillStyle(jobStatusClient === "Active" ? "good" : jobStatusClient === "Paused" ? "warn" : "neutral"),
+                }}
+              >
+                Status: <b style={{ color: "#111" }}>{jobStatusClient}</b>
+              </span>
+
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                Candidates: <b style={{ color: "#111" }}>{totalVisible}</b>
+              </span>
+
+              <span style={{ ...pillBase, ...pillStyle(totalRequested ? "warn" : "neutral") }}>
+                Intros requested: <b style={{ color: "#111" }}>{totalRequested}</b>
+              </span>
+
+              <span style={{ ...pillBase, ...pillStyle(totalApproved ? "good" : "neutral") }}>
+                Approved: <b style={{ color: "#111" }}>{totalApproved}</b>
+              </span>
+
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                Last activity: <b style={{ color: "#111" }}>{fmtTime(tankUpdated || null)}</b>
+              </span>
+            </div>
+
+            <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>Browse</span>
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>Request intro</span>
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>Resumes unlock after approval</span>
+            </div>
+
+            {candidateCardsLoadError ? (
+              <div style={{ marginTop: 12, color: "crimson", fontSize: 12 }}>
+                candidate_cards failed to load: {candidateCardsLoadError}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <Link href={`/c/${token}`} style={btn}>
+              Back to jobs
+            </Link>
+
+            <Link href={baseHref} style={btn}>
+              Refresh
+            </Link>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+          <div style={box}>
+            <div style={{ fontSize: 12, color: "#666", textTransform: "uppercase", letterSpacing: 0.6 }}>
+              What happens after you request an intro
+            </div>
+
+            <div style={{ marginTop: 10, display: "grid", gap: 8, color: "#333", fontSize: 13, lineHeight: 1.35 }}>
+              <div>We confirm interest and fit with the candidate.</div>
+              <div>We validate availability, location, and compensation alignment.</div>
+              <div>When approved, the resume unlocks here.</div>
+            </div>
+
+            <div style={{ color: "#777", fontSize: 12, marginTop: 10 }}>
+              If something is time-sensitive, reply to your last email and we’ll prioritize.
+            </div>
+          </div>
+
+          <div style={box}>
+            <div style={{ fontSize: 12, color: "#666", textTransform: "uppercase", letterSpacing: 0.6 }}>Recent activity</div>
+
+            {activityTop.length ? (
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                {activityTop.map((a, idx) => (
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ color: "#333", fontSize: 13 }}>{activityLine(a)}</div>
+                    <div style={{ color: "#777", fontSize: 12 }}>{fmtTime(a.at)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, color: "#777", fontSize: 13 }}>
+                No activity yet. Candidates will appear here as they’re screened and shared.
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+              <span style={{ ...pillBase, ...pillStyle(addedToday ? "good" : "neutral") }}>
+                Added today: <b style={{ color: "#111" }}>{addedToday}</b>
+              </span>
+              <span style={{ ...pillBase, ...pillStyle(added7d ? "good" : "neutral") }}>
+                Added (7 days): <b style={{ color: "#111" }}>{added7d}</b>
+              </span>
+              <span style={{ ...pillBase, ...pillStyle(intros7d ? "warn" : "neutral") }}>
+                Intros (7 days): <b style={{ color: "#111" }}>{intros7d}</b>
+              </span>
+              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                Approved total: <b style={{ color: "#111" }}>{totalApproved}</b>
+              </span>
+            </div>
+
+            <div style={{ color: "#777", fontSize: 12, marginTop: 10 }}>
+              This tank updates as candidates are screened, added, and intro requests are processed.
+            </div>
+          </div>
+
+          <div style={box}>
+            <div style={{ fontSize: 12, color: "#666", textTransform: "uppercase", letterSpacing: 0.6 }}>
+              Notes from your recruiter
+            </div>
+
+            <div style={{ marginTop: 10, color: notes ? "#333" : "#777", fontSize: 13, lineHeight: 1.4 }}>
+              {notes
+                ? notes
+                : "No notes posted yet. If you want to tighten scope, comp, or must-haves, reply to your last email and we’ll update the tank."}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <Link href={hrefAll} style={filter === "all" ? tabOn : tab}>
+                All
+              </Link>
+              <Link href={hrefAvailable} style={filter === "available" ? tabOn : tab}>
+                Available
+              </Link>
+              <Link href={hrefRequested} style={filter === "requested" ? tabOn : tab}>
+                Requested
+              </Link>
+              <Link href={hrefApproved} style={filter === "approved" ? tabOn : tab}>
+                Approved
+              </Link>
+            </div>
+
+            <form method="get" action={baseHref} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="hidden" name="f" value={filter} />
+              <input
+                name="q"
+                defaultValue={q}
+                placeholder="Search candidates"
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #d9d9d9",
+                  minWidth: 240,
+                  fontSize: 13,
+                }}
+              />
+              <button type="submit" style={btn}>
+                Search
+              </button>
+              {q ? (
+                <Link href={`${baseHref}?${new URLSearchParams({ f: filter }).toString()}`} style={btn}>
+                  Clear
+                </Link>
+              ) : null}
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        {rowsFiltered.length === 0 ? (
+          <div style={muted}>{rowsAll.length === 0 ? "No candidates in this tank yet." : "No matches for the current filter."}</div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            {rowsFiltered.map((r) => {
+              const cid = String(r.candidate_id);
+              const cc = cardByCandidateId.get(cid) || null;
+
+              const introReq = introByCandidate.get(cid);
+              const status = introReq ? normStatus(introReq.status) : null;
+
+              const hasAnyIntro = !!status;
+              const label = hasAnyIntro ? clientLabelForIntroStatus(status!) : null;
+
+              const approved = status ? isApproved(status) : false;
+
+              const anonLabel = labelByCandidateId.get(cid) || "Candidate";
+              const realName = norm(r.candidates?.full_name);
+              const displayName = approved && realName ? realName : anonLabel;
+
+              const hasResume = !!norm(r.candidates?.resume_url);
+              const canDownload = approved && hasResume;
+
+              const tier = norm((r as any).tier);
+              const rowNotes = norm((r as any).notes);
+
+              const headline = pick(cc, ["headline"]);
+              const summary = pick(cc, ["summary"]);
+
+              const comp = pick(cc, ["comp_range_text", "compensation_range", "compensation_range_text"]);
+              const compBand = pick(cc, ["comp_band"]);
+              const availability = pick(cc, ["availability"]);
+              const startDate = pick(cc, ["start_date"]);
+              const workMode = pick(cc, ["work_mode", "work_mode_pref", "work_mode_preference"]);
+              const location = pick(cc, ["location", "location_text"]);
+              const license = pick(cc, ["license_certification", "license", "certifications"]);
+              const languages = pick(cc, ["languages"]);
+              const relocate = pick(cc, ["willingness_to_relocate", "relocate"]);
+
+              return (
+                <div key={r.id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 300, flex: 1 }}>
+                      <div style={{ fontWeight: 750 }}>{displayName}</div>
+                      <div style={{ color: "#666", fontSize: 13, marginTop: 4 }}>{show(location)}</div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+                        <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                          Added: <b style={{ color: "#111" }}>{fmtTime(r.created_at)}</b>
+                        </span>
+
+                        {tier ? (
+                          <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                            Tier: <b style={{ color: "#111" }}>{tier}</b>
+                          </span>
+                        ) : null}
+
+                        {label ? (
+                          <span
+                            style={{
+                              ...pillBase,
+                              ...pillStyle(label === "Approved" ? "good" : label === "Intro requested" ? "warn" : "neutral"),
+                            }}
+                          >
+                            {label}
+                          </span>
+                        ) : (
+                          <span style={{ ...pillBase, ...pillStyle("good") }}>Available</span>
+                        )}
+                      </div>
+
+                      {cc ? (
+                        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                          {norm(headline) ? (
+                            <div style={{ fontSize: 13, color: "#111", fontWeight: 650 }}>{String(headline)}</div>
+                          ) : null}
+
+                          {norm(summary) ? (
+                            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.35 }}>{String(summary)}</div>
+                          ) : null}
+
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                              Comp: <b style={{ color: "#111" }}>{show(comp)}</b>
+                            </span>
+
+                            {norm(compBand) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                Band: <b style={{ color: "#111" }}>{String(compBand)}</b>
+                              </span>
+                            ) : null}
+
+                            <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                              Availability: <b style={{ color: "#111" }}>{show(availability)}</b>
+                            </span>
+
+                            {norm(startDate) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                Start: <b style={{ color: "#111" }}>{String(startDate)}</b>
+                              </span>
+                            ) : null}
+
+                            {norm(workMode) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                Work mode: <b style={{ color: "#111" }}>{String(workMode)}</b>
+                              </span>
+                            ) : null}
+
+                            {norm(license) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                License: <b style={{ color: "#111" }}>{String(license)}</b>
+                              </span>
+                            ) : null}
+
+                            {norm(languages) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                Languages: <b style={{ color: "#111" }}>{String(languages)}</b>
+                              </span>
+                            ) : null}
+
+                            {norm(relocate) ? (
+                              <span style={{ ...pillBase, ...pillStyle("neutral") }}>
+                                Relocate: <b style={{ color: "#111" }}>{String(relocate)}</b>
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>Candidate details not posted yet.</div>
+                      )}
+
+                      {rowNotes ? (
+                        <div style={{ marginTop: 10, color: "#555", fontSize: 13, lineHeight: 1.35, maxWidth: 720 }}>{rowNotes}</div>
+                      ) : null}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      {approved ? (
+                        canDownload ? (
+                          <a
+                            href={String(r.candidates?.resume_url)}
+                            style={{ ...btnPrimary, whiteSpace: "nowrap" }}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Download resume
+                          </a>
+                        ) : (
+                          <span style={{ color: "#666", fontSize: 12 }}>Resume not uploaded yet</span>
+                        )
+                      ) : null}
+
+                      {!hasAnyIntro ? (
+                        <form action="/api/request-intro" method="post">
+                          <input type="hidden" name="company_id" value={company_id} />
+                          <input type="hidden" name="candidate_id" value={r.candidate_id} />
+                          <input type="hidden" name="job_id" value={job_id} />
+                          <input type="hidden" name="token" value={token} />
+                          <input
+                            type="hidden"
+                            name="return_to"
+                            value={`${baseHref}?${new URLSearchParams({
+                              ...(q ? { q } : {}),
+                              ...(filter ? { f: filter } : {}),
+                            }).toString()}`}
+                          />
+                          <button type="submit" style={{ ...btnPrimary, whiteSpace: "nowrap" }}>
+                            Request intro
+                          </button>
+                        </form>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 12, color: "#666", fontSize: 12 }}>If you don’t see changes right away, hit Refresh.</div>
+    </main>
+  );
+}

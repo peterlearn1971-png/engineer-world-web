@@ -1,0 +1,24 @@
+InsureWorld Portal – Known Working State
+Date: 2026-01-27
+
+Confirmed working:
+- Admin: companies, jobs, candidates, job tank, intro requests
+- Client portal via /c/[token]
+- Client sees job tank
+- Client can request intro
+- Resume upload works
+- After admin approval, resume download button appears and works
+
+Manual test run:
+- Opened admin intro requests
+- Approved a request
+- Opened client token portal
+- Downloaded resume
+
+Database:
+- Supabase project: Insure World
+- intro_requests table active
+- RLS currently disabled
+
+Notes:
+- (anything odd you’ve noticed)
