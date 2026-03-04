@@ -1,0 +1,140 @@
+import { supabase } from "@/lib/supabaseClient";
+
+async function getCompanies() {
+  const { supabase } = await import("@/lib/supabaseClient");
+  const { data, error } = await supabase
+    .from("companies")
+    .select("id,name")
+    .order("name", { ascending: true });
+
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+const STATUS_OPTIONS = [
+  "pending",
+  "reviewing",
+  "candidate_contacted",
+  "candidate_interested",
+  "candidate_not_interested",
+  "client_declined",
+  "filled",
+  "archived",
+];
+
+export default async function AdminRequestsPage() {
+  const { data, error } = await supabase
+    .from("intro_requests")
+    .select(`
+      id,
+      created_at,
+      status,
+      internal_notes,
+      companies ( name ),
+      candidates (
+        full_name,
+        candidate_cards (
+          headline,
+          summary,
+          location_blurb,
+          availability,
+          work_mode,
+          comp_band,
+          skills,
+          languages,
+          target_roles
+        )
+      )
+    `)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    return <pre style={{ padding: 40 }}>{error.message}</pre>;
+  }
+
+  return (
+    <div style={{ padding: 40, maxWidth: 900 }}>
+      <h1>Admin – Intro Requests</h1>
+
+      {(data || []).map((r: any) => {
+        const card = r.candidates?.candidate_cards?.[0];
+
+        return (
+          <div
+            key={r.id}
+            style={{
+              border: "1px solid #ddd",
+              padding: 16,
+              borderRadius: 10,
+              marginBottom: 14,
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>
+              {r.companies?.name} → {r.candidates?.full_name}
+            </div>
+
+            <div style={{ color: "#444", marginTop: 4 }}>{card?.headline}</div>
+
+            <div style={{ marginTop: 10 }}>{card?.summary}</div>
+
+            <div style={{ fontSize: 14, marginTop: 8 }}>
+              <div><b>Location:</b> {card?.location_blurb}</div>
+              <div><b>Availability:</b> {card?.availability}</div>
+              <div><b>Work mode:</b> {card?.work_mode}</div>
+              <div><b>Comp:</b> {card?.comp_band}</div>
+              <div><b>Skills:</b> {card?.skills?.join(", ")}</div>
+              <div><b>Languages:</b> {card?.languages?.join(", ")}</div>
+              <div><b>Target roles:</b> {card?.target_roles?.join(", ")}</div>
+            </div>
+
+            <form action="/api/admin/update-request" method="post" style={{ marginTop: 14 }}>
+              <input type="hidden" name="request_id" value={r.id} />
+
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <label>
+                  <b>Status:</b>{" "}
+                  <select name="status" defaultValue={r.status || "pending"}>
+                    {STATUS_OPTIONS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button
+                  type="submit"
+                  style={{
+                    padding: "7px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #000",
+                    cursor: "pointer",
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <b>Internal notes:</b>
+                <textarea
+                  name="internal_notes"
+                  defaultValue={r.internal_notes || ""}
+                  placeholder="Example: Texted candidate. Waiting on reply."
+                  style={{
+                    width: "100%",
+                    minHeight: 70,
+                    marginTop: 6,
+                    padding: 10,
+                    borderRadius: 8,
+                    border: "1px solid #ddd",
+                  }}
+                />
+              </div>
+            </form>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
